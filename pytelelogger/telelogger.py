@@ -1,95 +1,232 @@
+import yaml
+
 from datetime import datetime
 from queue import Queue
-from typing import Optional
+from typing import Optional, TextIO, List, Dict
 
 from telegram import Update
 from telegram.error import BadRequest
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram.ext import Updater, CommandHandler, CallbackContext, Dispatcher
 
+from pytelelogger.defaults import TeleLoggerDefaults
 from pytelelogger.levels import TeleLoggerLevel
 from pytelelogger.types import PathType
 from pytelelogger.threaded import threaded
 
 
 class TeleLogger:
-    def __init__(self, token: str, user_name: str, file: Optional[PathType] = None,
-                 level: int = TeleLoggerLevel.WARNING.value, *args, **kwargs) -> None:
-        self.__updater = Updater(token, *args, **kwargs)
-        self.__level = level
+    def __init__(self, cfg_path: PathType, *args, **kwargs) -> None:
+        """
+        Initialize the class with some values.
 
-        # get and configure dispatcher
-        self.__dp = self.__updater.dispatcher
+        :param cfg_path: path to TeleLogger configuration file (.yaml or .yml).
+        :param args: variable length additional argument list for Updater object.
+        :param kwargs: arbitrary additional keyword arguments for Updater object.
+
+        :return: None.
+        """
+
+        with open(cfg_path, 'r', encoding='utf-8') as f:
+            cfg = yaml.safe_load(f)
+
+        self.__updater: Updater = Updater(cfg['token'], *args, **kwargs)
+        self.__dp: Dispatcher = self.__updater.dispatcher
         self.__dp.add_handler(CommandHandler('start', self.__start))
 
-        self.__user_name = user_name
-        self.__chat_id = None
-        self.__fstream = None if file is None else open(file, 'w', encoding='utf-8')
-        self.__log_queue = Queue()
+        self.__username: str = cfg['username']
+        self.__project: str = cfg['project']
+        self.__level: int = cfg['level'] or TeleLoggerDefaults.level
+
+        self.__mode: str = cfg['mode'] or TeleLoggerDefaults.mode
+        self.__paths: Dict[str, PathType] = cfg['paths'] or TeleLoggerDefaults.paths
+        self.__fstream: Dict[str, TextIO] = {k: open(v, 'w', encoding='utf-8') for k, v in self.__paths.items()}
+
+        self.__greeting: str = cfg['greeting'] or TeleLoggerDefaults.greeting
+        self.__missed: str = cfg['missed'] or TeleLoggerDefaults.missed
+        self.__dtf: str = cfg['dtf'] or TeleLoggerDefaults.dtf
+        self.__emojis: Dict[str, str] = cfg['emojis'] or TeleLoggerDefaults.emojis
+
+        self.__chat_id: Optional[int] = None
+        self.__log_queue: Queue = Queue()
 
         self.__updater.start_polling()
 
-    def __del__(self):
-        try:
-            self.__fstream.close()
-        except AttributeError:
-            pass
+    def __del__(self) -> None:
+        """
+        Destructor for TeleLogger object. It stops the polling and closes all file streams.
 
-    def __start(self, update: Update, context: CallbackContext):
-        if self.__user_name == update.effective_chat.username:
+        :return: None.
+        """
+
+        self.__updater.stop()
+
+        for k in self.__fstream:
+            
+            try:
+                self.__fstream[k].close()
+            except AttributeError:
+                pass
+
+    def __start(self, update: Update, context: CallbackContext) -> None:
+        """
+        Handler for /start command. It uses provided Telegram username to get needed chat_id.
+
+        :param update: object representing an incoming update.
+        :param context: context object passed to the callback called by dispatcher.
+
+        :return: None.
+        """
+
+        if self.__username == update.effective_chat.username:
             self.__chat_id = update.effective_chat.id
 
-            context.bot.send_message(chat_id=self.__chat_id, text='I\'m ready!')
+            context.bot.send_message(chat_id=self.__chat_id, text=self.__greeting)
 
             self.__resend_logs()
 
     @property
-    def level(self):
+    def level(self) -> int:
+        """
+        Get current logging level.
+        
+        :return: current logging level.
+        """
+        
         return self.__level
 
     @level.setter
-    def level(self, level):
+    def level(self, level: int) -> None:
+        """
+        Set logging level.
+        
+        :param level: new logging level.
+        
+        :return: None.
+        
+        :raises: ValueError if provided level is < 0 or > 5.
+        """
+        
         if not TeleLoggerLevel.has_value(level):
             raise ValueError('Unknown logging level')
 
         self.__level = level
 
-    @staticmethod
-    def __create_log(level: str, message: str) -> str:
-        return f'{level}\n{datetime.now().strftime("%d:%b:%Y %H:%M:%S")}\n{message}\n'
+    def __create_log(self, level: str, message: str) -> str:
+        """
+        Creates formatted log string.
 
-    def __send_log(self, level: str, message: str):
-        log = self.__create_log(level, message)
+        :param level: logging level.
+        :param message: message to be used in log.
+
+        :return: formatted log.
+        """
+
+        return f'{self.__project}\n\n{level}\n{datetime.now().strftime(self.__dtf)}\n\n{message}\n'
+
+    def __record_log(self, level: str, message: str) -> None:
+        """
+        Send message with log and write log to file.
+
+        :param level: logging level.
+        :param message: message to be used in log.
+
+        :return: None.
+        """
+
+        log: str = self.__create_log(level, message)
+        lvl = level.lower()
 
         try:
-            self.__updater.bot.send_message(chat_id=self.__chat_id, text=log)
-        except BadRequest:
-            print('put log in queue')
-            self.__log_queue.put(log)
+            self.__fstream[lvl if self.__mode == 'multi' else 'debug'].write(log)
+        except KeyError:
+            pass
 
-        if self.__fstream is not None:
-            self.__fstream.write(log)
+        if TeleLoggerLevel.__members__[level].value >= self.__level:
+            log = self.__emojis[lvl] + log + '\n' + '\n'.join(self.__generate_hashtags(lvl))
+
+            try:
+                self.__updater.bot.send_message(chat_id=self.__chat_id, text=log)
+            except BadRequest:
+                self.__log_queue.put(log)
 
     def debug(self, message: str) -> None:
-        self.__send_log(TeleLoggerLevel.DEBUG.name, message)
+        """
+        Record debug log.
+        
+        :param message: message to be used in log.
+        
+        :return: None. 
+        """
+        
+        self.__record_log(TeleLoggerLevel.DEBUG.name, message)
 
     def info(self, message: str) -> None:
-        self.__send_log(TeleLoggerLevel.INFO.name, message)
+        """
+        Record info log.
+        
+        :param message: message to be used in log.
+        
+        :return: None.
+        """
+        
+        self.__record_log(TeleLoggerLevel.INFO.name, message)
 
     def warning(self, message: str) -> None:
-        self.__send_log(TeleLoggerLevel.WARNING.name, message)
+        """
+        Record warning log.
+        
+        :param message: message to be used in log.
+        
+        :return: None.
+        """
+        
+        self.__record_log(TeleLoggerLevel.WARNING.name, message)
 
     def error(self, message: str) -> None:
-        self.__send_log(TeleLoggerLevel.ERROR.name, message)
+        """
+        Record error log.
+        
+        :param message: message to be used in log.
+        
+        :return: None.
+        """
+        
+        self.__record_log(TeleLoggerLevel.ERROR.name, message)
 
     def critical(self, message: str) -> None:
-        self.__send_log(TeleLoggerLevel.CRITICAL.name, message)
+        """
+        Record critical log.
+        
+        :param message: message to be used in log.
+        
+        :return: None.
+        """
+        
+        self.__record_log(TeleLoggerLevel.CRITICAL.name, message)
+
+    def __generate_hashtags(self, level: str) -> List[str]:
+        """
+        Generate some hashtags to make search in Telegram dialog easier.
+        
+        :param level: logging level.
+        
+        :return: list of 3 hashtags: #project, #project_level, #level
+        """
+        
+        return ['#' + h for h in [self.__project, self.__project + '_' + level, level]]
 
     @threaded
-    def __resend_logs(self):
+    def __resend_logs(self) -> None:
+        """
+        This method tries to resend all logs whose sending was messed up. Runs in separate thread.
+        
+        :return: None. 
+        """
+        
         while True:
             while not self.__log_queue.empty():
-                log = 'I\'ve got a missed log for you!\n\n' + self.__log_queue.get()
-                is_send = False
+                log: str = self.__missed + '\n\n' + self.__log_queue.get()
+                is_send: bool = False
 
                 while not is_send:
                     try:
