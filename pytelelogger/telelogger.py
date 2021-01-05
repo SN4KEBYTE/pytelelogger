@@ -34,17 +34,16 @@ class TeleLogger:
         self.__dp.add_handler(CommandHandler('start', self.__start))
 
         self.__username: str = cfg['username']
-        self.__project: str = cfg['project']
-        self.__level: int = cfg['level'] or TeleLoggerDefaults.level
+        self.__project: str = cfg['project'].replace(' ', '')
+        self.__level: int = cfg.get('level', TeleLoggerDefaults.level)
 
-        self.__mode: str = cfg['mode'] or TeleLoggerDefaults.mode
-        self.__paths: Dict[str, PathType] = cfg['paths'] or TeleLoggerDefaults.paths
+        self.__mode: str = cfg.get('mode', TeleLoggerDefaults.mode)
+        self.__paths: Dict[str, PathType] = cfg.get('paths', TeleLoggerDefaults.paths)
         self.__fstream: Dict[str, TextIO] = {k: open(v, 'w', encoding='utf-8') for k, v in self.__paths.items()}
 
-        self.__greeting: str = cfg['greeting'] or TeleLoggerDefaults.greeting
-        self.__missed: str = cfg['missed'] or TeleLoggerDefaults.missed
-        self.__dtf: str = cfg['dtf'] or TeleLoggerDefaults.dtf
-        self.__emojis: Dict[str, str] = cfg['emojis'] or TeleLoggerDefaults.emojis
+        self.__greeting: str = cfg.get('greeting', TeleLoggerDefaults.greeting)
+        self.__dtf: str = cfg.get('dtf', TeleLoggerDefaults.dtf)
+        self.__emojis: Dict[str, str] = cfg.get('emojis', TeleLoggerDefaults.emojis)
 
         self.__chat_id: Optional[int] = None
         self.__log_queue: Queue = Queue()
@@ -59,9 +58,9 @@ class TeleLogger:
         """
 
         self.__updater.stop()
+        self.__handler.join()
 
         for k in self.__fstream:
-            
             try:
                 self.__fstream[k].close()
             except AttributeError:
@@ -82,7 +81,11 @@ class TeleLogger:
 
             context.bot.send_message(chat_id=self.__chat_id, text=self.__greeting)
 
-            self.__resend_logs()
+    def stop(self, force=False):
+        if not force:
+            self.__handler.join()
+
+        self.__updater.stop()
 
     @property
     def level(self) -> int:
@@ -134,7 +137,7 @@ class TeleLogger:
         """
 
         log: str = self.__create_log(level, message)
-        lvl = level.lower()
+        lvl: str = level.lower()
 
         try:
             self.__fstream[lvl if self.__mode == 'multi' else 'debug'].write(log)
@@ -142,12 +145,15 @@ class TeleLogger:
             pass
 
         if TeleLoggerLevel.__members__[level].value >= self.__level:
-            log = self.__emojis[lvl] + log + '\n' + '\n'.join(self.__generate_hashtags(lvl))
+            log += '\n' + '\n'.join(self.__generate_hashtags(lvl))
+            pos = log.find('\n\n') + 2
+            log = log[:pos] + self.__emojis[lvl] + log[pos:]
 
             try:
                 self.__updater.bot.send_message(chat_id=self.__chat_id, text=log)
             except BadRequest:
                 self.__log_queue.put(log)
+                self.__handler = self.__resend_logs()
 
     def debug(self, message: str) -> None:
         """
@@ -212,25 +218,24 @@ class TeleLogger:
         
         :return: list of 3 hashtags: #project, #project_level, #level
         """
-        
+
         return ['#' + h for h in [self.__project, self.__project + '_' + level, level]]
 
-    @threaded
+    @threaded(daemon=True)
     def __resend_logs(self) -> None:
         """
         This method tries to resend all logs whose sending was messed up. Runs in separate thread.
         
         :return: None. 
         """
-        
-        while True:
-            while not self.__log_queue.empty():
-                log: str = self.__missed + '\n\n' + self.__log_queue.get()
-                is_send: bool = False
 
-                while not is_send:
-                    try:
-                        self.__updater.bot.send_message(chat_id=self.__chat_id, text=log)
-                        is_send = True
-                    except BadRequest:
-                        pass
+        while not self.__log_queue.empty():
+            log: str = self.__log_queue.get()
+            is_send: bool = False
+
+            while not is_send:
+                try:
+                    self.__updater.bot.send_message(chat_id=self.__chat_id, text=log)
+                    is_send = True
+                except BadRequest:
+                    pass
