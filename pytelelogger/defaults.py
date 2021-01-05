@@ -1,10 +1,14 @@
-from typing import List, Dict
+from typing import Dict
 
 from pytelelogger.levels import TeleLoggerLevel
 from pytelelogger.types import PathType
 
 
 class TeleLoggerDefaults:
+    """
+    Default values for TeleLogger.
+    """
+
     level: int = TeleLoggerLevel.WARNING.value
 
     mode: str = 'multi'
@@ -18,7 +22,6 @@ class TeleLoggerDefaults:
     }
 
     greeting: str = 'I\'m ready!'
-    missed: str = 'I\'ve got a missed log for you!'
 
     dtf: str = '%d/%b/%Y %H:%M:%S'
 
