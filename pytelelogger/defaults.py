@@ -1,7 +1,7 @@
 from typing import Dict
 
 from pytelelogger.levels import TeleLoggerLevel
-from pytelelogger.types import PathType
+from pytelelogger._types import PathType
 
 
 class TeleLoggerDefaults:

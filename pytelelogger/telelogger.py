@@ -10,8 +10,8 @@ from telegram.ext import Updater, CommandHandler, CallbackContext, Dispatcher
 
 from pytelelogger.defaults import TeleLoggerDefaults
 from pytelelogger.levels import TeleLoggerLevel
-from pytelelogger.threaded import threaded
-from pytelelogger.types import PathType
+from pytelelogger._threaded import threaded
+from pytelelogger._types import PathType
 
 
 class TeleLogger:
