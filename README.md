@@ -59,13 +59,9 @@ Later, ``chat_id`` field will be added to config file. Please, don't remove it.
 
 #### 3. Add some code
 ```python
-import yaml
 from pytelelogger import TeleLogger
 
 if __name__ == '__main__':
-    with open('cfg.yaml', 'r', encoding='utf-8') as f:
-        data = yaml.safe_load(f)
-
     tl = TeleLogger('cfg.yaml')
     tl.debug('Debug message!')
     tl.info('Info message!')
