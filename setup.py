@@ -1,5 +1,5 @@
 from pathlib import Path
-from setuptools import setup
+from setuptools import setup, find_packages
 
 from pytelelogger import __version__
 
@@ -32,4 +32,5 @@ setup(
         'python-telegram-bot>=13.1',
         'pyyaml>=5.3.1'
     ],
+    packages=find_packages(),
 )
